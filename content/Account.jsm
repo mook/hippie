@@ -52,7 +52,12 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         })
         // Fill out the sign in form
         .then((doc) => {
-            let form = doc.querySelector("form");
+            let url = new URL(doc.documentURI);
+            if (url.pathname == "/home") {
+                // already signed in
+                return doc;
+            }
+            let form = doc.querySelector("form[name='signin']");
             let data = new FormData(form);
             data.set("email", login);
             data.set("password", this.imAccount.password);
@@ -77,10 +82,19 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         // Get the API token
         .then(this._lookupAPIToken.bind(this))
         // Get current user xmpp id
-        .then(() => { return this._APIRequest(`/v2/user/${login}`); })
-        .then((json) => {
-            this._user_info = json;
-            this._jid = this._parseJID(json.xmpp_jid);
+        .then(() => {
+            return Utils.fetch(`https://${this._api_server}/account/xmpp`)
+        })
+        .then((doc) => {
+            let content = doc.querySelector(".aui-page-panel-content table.aui");
+            this._user_info = {
+                jid: content.querySelector("#jabberid").textContent.trim(),
+                name: content.querySelector("#nickname").textContent.trim(),
+                host: content.querySelector("#connecthost").textContent.trim(),
+            };
+        })
+        .then(() => {
+            this._jid = this._parseJID(this._user_info.jid);
 
             // For the resource, if the user has edited the option to a non
             // empty value, use that.
@@ -103,7 +117,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             // while connected it's the jid of the session that's interesting.
 
             this._connection =
-              new XMPPSession(this._jid.domain,
+              new XMPPSession(this._user_info.host,
                               5222,
                               "require_tls",
                               this._jid,
@@ -142,8 +156,6 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
                 return;
             }
 
-            // Check for fixed personal token
-
             // Check for existing OAuth scoped token
             for (let label of doc.querySelectorAll("#tokens tr.data td.label")) {
                 if (label.textContent.trim() == this._TOKEN_LABEL) {
@@ -157,7 +169,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
 
             // Request new token
             this.DEBUG(`Will need to request new token`);
-            let form = doc.querySelector("#tokens ~ form");
+            let form = doc.querySelector(".aui-page-panel-content > form[action$='/account/api']");
             let data = new FormData(form);
             data.set("label", this._TOKEN_LABEL);
             data.delete("scopes[]");
