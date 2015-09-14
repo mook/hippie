@@ -28,10 +28,10 @@ HipChatPrpl.prototype = Utils.extend(GenericProtocolPrototype, {
     get usernameSplits() {
         return [
             {
-                label: 'Jabber domain',
+                label: 'HipChat server',
                 separator: '@',
                 reverse: true,
-                defaultValue: 'chat.hipchat.com',
+                defaultValue: 'www.hipchat.com',
             },
         ];
     },
