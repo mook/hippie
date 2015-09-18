@@ -1,6 +1,8 @@
 const EXPORTED_SYMBOLS = ["HipChatAccount"];
 const { interfaces: Ci, results: Cr, utils: Cu, classes: Cc } = Components;
 
+Cu.import("resource://gre/modules/FileUtils.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/Preferences.jsm");
 Cu.import("resource:///modules/imServices.jsm");
 Cu.import("resource:///modules/imXPCOMUtils.jsm");
@@ -42,6 +44,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         this._api_server = server;
 
         this.DEBUG(`Connecting to ${server} as ${login}`);
+        this.reportConnecting("Locating web login");
 
         new Promise((resolve, reject) => { return resolve()})
         // Fetch the sign in page
@@ -80,10 +83,13 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             return Utils.fetch(url);
         })
         // Get the API token
-        .then(this._lookupAPIToken.bind(this))
+        .then((doc) => {
+            this.reportConnecting("Locating connection information");
+            this._lookupAPIToken(doc);
+        })
         // Get current user xmpp id
         .then(() => {
-            return Utils.fetch(`https://${this._api_server}/account/xmpp`)
+            return Utils.fetch(`https://${this._api_server}/account/xmpp`);
         })
         .then((doc) => {
             let content = doc.querySelector(".aui-page-panel-content table.aui");
@@ -271,6 +277,62 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             .catch((error) => {
                 this.ERROR(error);
             })
+    },
+
+    _onRosterItem: function(aItem, aNotifyOfUpdates) {
+        // Stub out _requestVCard here, the server falls over if we request too
+        // many at once - about 1000 or so.
+        let _requestVCard = Object.getOwnPropertyDescriptor(this, "_requestVCard");
+        this._requestVCard = (jid) => {
+            this.DEBUG(`Skipping request of vCard for ${jid}`);
+        };
+        try {
+            var jid = XMPPAccountPrototype._onRosterItem.call(this, aItem, aNotifyOfUpdates);
+        } finally {
+            if (_requestVCard) {
+                Object.setOwnPropertyDescriptor(this, "_requestVCard", _requestVCard);
+            } else {
+                delete this._requestVCard;
+            }
+        }
+
+        // There may be extra fields we can fill in from the roster item
+        if (!jid || !this._buddies.has(jid)) {
+            this.DEBUG(`No buddy found for ${jid}, not setting photo`);
+            return jid;
+        }
+        let buddy = this._buddies.get(jid);
+        if (aItem.attributes["name"]) {
+            buddy.vCardFormattedName = aItem.attributes["name"];
+        }
+        if (aItem.attributes["photo_url"] && !buddy.buddyIconFilename) {
+            let url = NetUtil.newURI(aItem.attributes["photo_url"]);
+            let principal = Services.scriptSecurityManager.createCodebasePrincipal(url, {});
+            let channel = NetUtil.newChannel({
+                uri: url,
+                loadingPrincipal: principal,
+                contentPolicyType: Ci.nsIContentPolicy.TYPE_IMAGE
+            });
+            NetUtil.asyncFetch(channel, (inputStream, status, request) => {
+                if (!Components.isSuccessCode(status)) {
+                    this.DEBUG(`Failed to fetch photo for ${buddy}: ${status.toString(16)}`);
+                    return;
+                }
+                let file = FileUtils.getFile("ProfD", ["icons",
+                                                       this.protocol.normalizedName,
+                                                       this.normalizedName,
+                                                       `${buddy.normalizedName}.jpg`]);
+                let outputStream = FileUtils.openSafeFileOutputStream(file);
+                NetUtil.asyncCopy(inputStream, outputStream, (status) => {
+                    if (Components.isSuccessCode(status)) {
+                        buddy.buddyIconFilename = Services.io.newFileURI(file).spec;
+                    } else {
+                        this.DEBUG(`Failed to copy photo for ${buddy}: ${status.toString(16)}`);
+                    }
+                });
+            });
+        }
+        return jid;
     },
 
     get wrappedJSObject() { return this },
