@@ -41,10 +41,6 @@ HipChatPrpl.prototype = Utils.extend(GenericProtocolPrototype, {
                 get label() { return _("options.resource"); },
                 get default() { return XMPPDefaultResource; },
             },
-            server: {
-                get label() { return _("options.connectServer"); },
-                default: "chat.hipchat.com",
-            },
         };
     },
 
