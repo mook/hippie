@@ -3,12 +3,24 @@ hippie
 
 This is an Instant protocol implementation for HipChat.
 
-- [ ] Account creation
-  - [ ] Automatic API token provisioning
-  - [ ] Custom server support
-- [ ] User list
-- [ ] Single user messaging
-  - [ ] User list fetching
-- [ ] Multi user chat
-  - [ ] Room list fetching
-  - [ ] Private rooms
+Licensed under MPL2.
+
+Useful references:
+- https://ecosystem.atlassian.net/wiki/display/HCDEV/HipChat+XMPP+Protocol+Documentation
+
+Status:
+- [x] Account creation
+  - [x] Automatic API token provisioning
+  - [x] Custom server support
+- [x] User list
+- [x] Single user messaging
+  - [x] User list fetching
+  - [ ] Emoticons
+  - File uploads
+    - [ ] Display
+    - [ ] Upload
+- [x] Multi user chat
+  - [x] Room list fetching
+  - Private rooms
+    - [x] Fetch
+    - [ ] Create
