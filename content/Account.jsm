@@ -150,6 +150,10 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
                               this._jid,
                               this.imAccount.password,
                               this);
+
+            // HipChat times out at 90s, ping at 60s.
+            this._connection.kTimeBeforePing = 60000;
+
             return this._connection;
         })
         .catch((ex) => {
