@@ -2,4 +2,3 @@ component {addb6c02-116a-48f1-950d-c8672980e3af} prpl.js
 contract @mozilla.org/chat/hipchat;1 {addb6c02-116a-48f1-950d-c8672980e3af}
 category im-protocol-plugin prpl-hipchat @mozilla.org/chat/hipchat;1
 content hippie content/
-overlay chrome://messenger/content/chat/imAccountWizard.xul chrome://hippie/content/imAccountWizardOverlay.xul

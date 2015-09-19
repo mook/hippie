@@ -1,7 +1,7 @@
 hippie
 =======
 
-This is an Instant protocol implementation for HipChat.
+This is an Instantbird/Thunderbird protocol implementation for HipChat.
 
 Licensed under MPL2.
 
