@@ -9,18 +9,36 @@ Cu.import("resource:///modules/imXPCOMUtils.jsm");
 Cu.import("resource:///modules/jsProtoHelper.jsm");
 Cu.import("resource:///modules/xmpp.jsm");
 Cu.import("resource:///modules/xmpp-session.jsm");
+Cu.import("resource:///modules/xmpp-xml.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
 Cu.importGlobalProperties(["fetch", "XMLHttpRequest", "URL"]);
+
+XPCOMUtils.defineLazyGetter(this, "_", () =>
+  l10nHelper("chrome://chat/locale/xmpp.properties")
+);
+
+const kRoomInfoRefreshInterval =  12 * 60 * 60 * 1000; // 12 hours.
+
+function ChatRoomFieldValues(mapping={}) {
+    this._data = new Map();
+    for (let key of Object.keys(mapping)) {
+        this.setValue(key, mapping[key]);
+    }
+}
+ChatRoomFieldValues.prototype = {
+    getValue(aIdentifier) {
+        return this._data.get(aIdentifier);
+    },
+    setValue(aIdentifier, aValue) {
+        this._data.set(aIdentifier, aValue);
+    },
+};
 
 function HipChatAccount(aPrpl, aImAccount) {
     this._init(aPrpl, aImAccount);
     initLogModule(`${this.protocol.id}.${this.name}`, this);
     this.DEBUG(`Created account ${this}`);
 }
-
-XPCOMUtils.defineLazyGetter(this, "_", () =>
-  l10nHelper("chrome://chat/locale/xmpp.properties")
-);
 
 HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
     chatRoomFields: {
@@ -246,37 +264,100 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         return muc;
     },
 
-    requestRoomInfo: function(callback, offset=0) {
-        this.DEBUG(`Requesting room info`);
-        this._APIRequest(`/v2/room?start-index=${offset}`)
-            .then((json) => {
-                return Promise.all(json.items.map((item) => {
-                    return this._APIRequest(`/v2/room/${item.id}`)
-                    .then((room) => {
-                        let jid = this._parseJID(room.xmpp_jid);
-                        return ({
-                            accountId: this.imAccount.id,
-                            name: room.name,
-                            topic:room.topic,
-                            participantCount: 0,
-                            chatRoomFieldValues: ChatRoomFieldValues({
-                                room: jid.node,
-                                server: jid.domain,
-                                nick: this._user_info.name,
-                            })
-                        });
-                    });
-                }))
-            })
-            .then((rooms) => {
-                callback(rooms, this, !json.links.next, rooms.length);
-                if (json.links.next) {
-                    this.requestRoomInfo(callback, json.startIndex + json.items.length);
-                }
-            })
-            .catch((error) => {
-                this.ERROR(error);
-            })
+    _roomInfoCallbacks: new Set(),
+    _roomInfoRequestTime: 0,
+    _roomInfoCache: [],
+
+    requestRoomInfo: function(callback, requestStartTime=0) {
+        this.DEBUG(`Requesting room info (time=${requestStartTime})`);
+
+        if (!this._mucService) {
+            this.DEBUG(`requestRoomInfo failed, no muc service`);
+            callback.onRoomInfoAvailable([], this, true, 0);
+            return;
+        }
+
+        if (this._roomInfoCallbacks.has(callback)) {
+            return;  // a room info request is pending, don't duplicate work
+        }
+
+        if (Date.now() - this._roomInfoRequestTime < kRoomInfoRefreshInterval) {
+            // We have a valid cache; use it.
+            this.DEBUG(`Using cache of ${this._roomInfoCache.length} items`);
+            callback.onRoomInfoAvailable(this._roomInfoCache, this, true, this._roomInfoCache.length);
+            return;
+        }
+
+        if (this._roomInfoCallbacks.size > 0) {
+            // There's a request pending, wait for that to come back instead
+            this.DEBUG(`Adding callback to existing request (${this._roomInfoCallbacks.size} callbacks)`);
+            this._roomInfoCallbacks.add(callback);
+            return;
+        }
+
+        this._roomInfoCallbacks.add(callback);
+        this._roomInfoRequestTime = 0;
+
+        if (requestStartTime == 0) {
+            requestStartTime = Date.now();
+            // Fresh request, clear the cache; otherwise, the cache contains the
+            // previous items from this set
+            this._roomInfoCache = [];
+        }
+
+        let iq = Stanza.iq("get", null, this._mucService,
+                           Stanza.node("query", Stanza.NS.disco_items));
+        let lastRoom = this._roomInfoCache.slice(-1)[0];
+        if (lastRoom) {
+            let set = Stanza.node("set",
+                                  "http://jabber.org/protocol/rsm",
+                                  null,
+                                  Stanza.node("after",
+                                              null,
+                                              null,
+                                              lastRoom.name));
+            iq.getChildren()[0].addChild(set);
+        }
+        this.DEBUG(`Requesting rooms: ${iq.getXML()}`);
+
+        this.sendStanza(iq, (receivedStanza) => {
+            let newItems = [];
+            let query = receivedStanza.getElement(["query"]);
+            for (let item of query.getElements(["item"])) {
+                let jid = this._parseJID(item.attributes["jid"]);
+                newItems.push({
+                    accountId: this.imAccount.id,
+                    name: item.attributes["name"],
+                    topic: item.getElement(["x", "topic"]).innerText.trim(),
+                    participantCount: +item.getElement(["x", "num_participants"]).innerText.trim(),
+                    chatRoomFieldValues: new ChatRoomFieldValues({
+                        room: jid.node,
+                        server: jid.domain,
+                    })
+                });
+            }
+            let set = query.getElement(["set"]);
+            if (set) {
+                // The results are incomplete; fetch more
+                this.DEBUG(`Set found, fetching more items`);
+                this.requestRoomInfo(callback, requestStartTime);
+            }
+            [].push.call(this._roomInfoCache, newItems);
+            for (let callback of this._roomInfoCallbacks) {
+                callback.onRoomInfoAvailable(newItems, this, !set, newItems.length);
+            }
+            if (!set) {
+                // No more items
+                this._roomInfoRequestTime = requestStartTime;
+                this._roomInfoCallbacks.clear();
+            }
+            return true;
+        });
+    },
+
+    joinChat: function(aComponents) {
+        aComponents.setValue("nick", this._user_info.name);
+        return XMPPAccountPrototype.joinChat.call(this, aComponents);
     },
 
     _onRosterItem: function(aItem, aNotifyOfUpdates) {
