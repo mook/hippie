@@ -11,7 +11,7 @@ Cu.import("resource:///modules/xmpp.jsm");
 Cu.import("resource:///modules/xmpp-session.jsm");
 Cu.import("resource:///modules/xmpp-xml.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
-Cu.importGlobalProperties(["fetch", "XMLHttpRequest", "URL"]);
+Cu.importGlobalProperties(["URL"]);
 
 XPCOMUtils.defineLazyGetter(this, "_", () =>
   l10nHelper("chrome://chat/locale/xmpp.properties")
@@ -37,6 +37,9 @@ ChatRoomFieldValues.prototype = {
 function HipChatAccount(aPrpl, aImAccount) {
     this._init(aPrpl, aImAccount);
     initLogModule(`${this.protocol.id}.${this.name}`, this);
+
+    this._roomInfoCallbacks = new Set();
+    this._photoFetchURLs = new Map();
     this.DEBUG(`Created account ${this}`);
 }
 
@@ -360,6 +363,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         return XMPPAccountPrototype.joinChat.call(this, aComponents);
     },
 
+    _photoFetchURLs: new Map(),
     _onRosterItem: function(aItem, aNotifyOfUpdates) {
         // Stub out _requestVCard here, the server falls over if we request too
         // many at once - about 1000 or so.
@@ -387,31 +391,54 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             buddy.vCardFormattedName = aItem.attributes["name"];
         }
         if (aItem.attributes["photo_url"] && !buddy.buddyIconFilename) {
-            let url = NetUtil.newURI(aItem.attributes["photo_url"]);
-            let principal = Services.scriptSecurityManager.createCodebasePrincipal(url, {});
-            let channel = NetUtil.newChannel({
-                uri: url,
-                loadingPrincipal: principal,
-                contentPolicyType: Ci.nsIContentPolicy.TYPE_IMAGE
-            });
-            NetUtil.asyncFetch(channel, (inputStream, status, request) => {
-                if (!Components.isSuccessCode(status)) {
-                    this.DEBUG(`Failed to fetch photo for ${buddy}: ${status.toString(16)}`);
-                    return;
-                }
-                let file = FileUtils.getFile("ProfD", ["icons",
-                                                       this.protocol.normalizedName,
-                                                       this.normalizedName,
-                                                       `${buddy.normalizedName}.jpg`]);
-                let outputStream = FileUtils.openSafeFileOutputStream(file);
-                NetUtil.asyncCopy(inputStream, outputStream, (status) => {
-                    if (Components.isSuccessCode(status)) {
-                        buddy.buddyIconFilename = Services.io.newFileURI(file).spec;
-                    } else {
-                        this.DEBUG(`Failed to copy photo for ${buddy}: ${status.toString(16)}`);
-                    }
+            let url = aItem.attributes["photo_url"];
+            if (this._photoFetchURLs.has(url)) {
+                this._photoFetchURLs.get(url).push(buddy);
+                return;
+            }
+            let hasher = Cc["@mozilla.org/security/hash;1"]
+                           .createInstance(Ci.nsICryptoHash);
+            hasher.init(Ci.nsICryptoHash.SHA1);
+            hasher.update(url.split("").map((c) => c.charCodeAt(0)), url.length);
+            let leaf = `${hasher.finish(true)}.jpg`.replace(/\//g, "-");
+            let file = FileUtils.getFile("ProfD", ["icons",
+                                                   this.protocol.normalizedName,
+                                                   this.normalizedName,
+                                                   "photos",
+                                                   leaf]);
+            let filespec = Services.io.newFileURI(file).spec;
+            if (!file.exists()) {
+                this._photoFetchURLs.set(url, []);
+                this._photoFetchURLs.get(url).push(buddy);
+                let uri = NetUtil.newURI(url);
+                let principal = Services.scriptSecurityManager.createCodebasePrincipal(uri, {});
+                let channel = NetUtil.newChannel({
+                    uri: uri,
+                    loadingPrincipal: principal,
+                    contentPolicyType: Ci.nsIContentPolicy.TYPE_IMAGE
                 });
-            });
+                NetUtil.asyncFetch(channel, (inputStream, status, request) => {
+                    if (!Components.isSuccessCode(status)) {
+                        this.DEBUG(`Failed to fetch photo for ${buddy}: ${status.toString(16)}`);
+                        this._photoFetchURLs.delete(url);
+                        return;
+                    }
+                    let outputStream = FileUtils.openSafeFileOutputStream(file);
+                    NetUtil.asyncCopy(inputStream, outputStream, (status) => {
+                        if (Components.isSuccessCode(status)) {
+                            for (let buddy of this._photoFetchURLs.get(url)) {
+                                buddy.buddyIconFilename = filespec;
+                            }
+                        } else {
+                            this.DEBUG(`Failed to copy photo for ${buddy}: ${status.toString(16)}`);
+                        }
+                        this._photoFetchURLs.delete(url);
+                    });
+                });
+            } else {
+                // File already exists, don't download again
+                buddy.buddyIconFilename = filespec;
+            }
         }
         return jid;
     },
