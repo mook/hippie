@@ -8,6 +8,10 @@ Cu.import("resource:///modules/xmpp-session.jsm");
 Cu.import("chrome://hippie/content/Account.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
 
+XPCOMUtils.defineLazyGetter(this, "_", () =>
+  l10nHelper("chrome://chat/locale/xmpp.properties")
+);
+
 function HipChatPrpl() {
     initLogModule(`${this.id}.prpl`, this);
     Cu.import("resource:///modules/xmpp-commands.jsm", this);
