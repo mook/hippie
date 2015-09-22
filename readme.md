@@ -7,6 +7,7 @@ Licensed under MPL2.
 
 Useful references:
 - https://ecosystem.atlassian.net/wiki/display/HCDEV/HipChat+XMPP+Protocol+Documentation
+- https://www.hipchat.com/docs/apiv2 (rate limited)
 
 Status:
 - [x] Account creation

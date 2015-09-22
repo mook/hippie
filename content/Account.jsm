@@ -11,6 +11,7 @@ Cu.import("resource:///modules/xmpp.jsm");
 Cu.import("resource:///modules/xmpp-session.jsm");
 Cu.import("resource:///modules/xmpp-xml.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
+Cu.import("chrome://hippie/content/Conversation.jsm");
 Cu.importGlobalProperties(["URL"]);
 
 XPCOMUtils.defineLazyGetter(this, "_", () =>
@@ -273,9 +274,9 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
 
     _roomInfoCallbacks: new Set(),
     _roomInfoRequestTime: 0,
-    _roomInfoCache: [],
+    _roomInfoCache: new Map(), // jid -> entries
 
-    requestRoomInfo: function(callback, requestStartTime=0) {
+    requestRoomInfo: function(callback, requestStartTime=0, lastRoomName=null) {
         this.DEBUG(`Requesting room info (time=${requestStartTime})`);
 
         if (!this._mucService) {
@@ -290,8 +291,8 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
 
         if (Date.now() - this._roomInfoRequestTime < kRoomInfoRefreshInterval) {
             // We have a valid cache; use it.
-            this.DEBUG(`Using cache of ${this._roomInfoCache.length} items`);
-            callback.onRoomInfoAvailable(this._roomInfoCache, this, true, this._roomInfoCache.length);
+            this.DEBUG(`Using cache of ${this._roomInfoCache.size} items`);
+            callback.onRoomInfoAvailable(this._roomInfoCache.values(), this, true, this._roomInfoCache.size);
             return;
         }
 
@@ -307,22 +308,18 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
 
         if (requestStartTime == 0) {
             requestStartTime = Date.now();
-            // Fresh request, clear the cache; otherwise, the cache contains the
-            // previous items from this set
-            this._roomInfoCache = [];
         }
 
         let iq = Stanza.iq("get", null, this._mucService,
                            Stanza.node("query", Stanza.NS.disco_items));
-        let lastRoom = this._roomInfoCache.slice(-1)[0];
-        if (lastRoom) {
+        if (lastRoomName) {
             let set = Stanza.node("set",
                                   "http://jabber.org/protocol/rsm",
                                   null,
                                   Stanza.node("after",
                                               null,
                                               null,
-                                              lastRoom.name));
+                                              lastRoomName));
             iq.getChildren()[0].addChild(set);
         }
         this.DEBUG(`Requesting rooms: ${iq.getXML()}`);
@@ -332,24 +329,28 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             let query = receivedStanza.getElement(["query"]);
             for (let item of query.getElements(["item"])) {
                 let jid = this._parseJID(item.attributes["jid"]);
-                newItems.push({
+                let roomInfo = {
                     accountId: this.imAccount.id,
                     name: item.attributes["name"],
                     topic: item.getElement(["x", "topic"]).innerText.trim(),
                     participantCount: +item.getElement(["x", "num_participants"]).innerText.trim(),
+                    jid: item.attributes["jid"],
+                    hipchat_id: item.getElement(["x", "id"]).innerText.trim(),
+                    version: item.getElement(["x", "version"]).innerText.trim(),
                     chatRoomFieldValues: new ChatRoomFieldValues({
                         room: jid.node,
                         server: jid.domain,
                     })
-                });
+                };
+                this._roomInfoCache[roomInfo.jid] = roomInfo;
+                newItems.push(roomInfo);
             }
             let set = query.getElement(["set"]);
             if (set) {
                 // The results are incomplete; fetch more
                 this.DEBUG(`Set found, fetching more items`);
-                this.requestRoomInfo(callback, requestStartTime);
+                this.requestRoomInfo(callback, requestStartTime, newItems.slice(-1)[0].name);
             }
-            [].push.call(this._roomInfoCache, newItems);
             for (let callback of this._roomInfoCallbacks) {
                 callback.onRoomInfoAvailable(newItems, this, !set, newItems.length);
             }
@@ -359,6 +360,41 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
                 this._roomInfoCallbacks.clear();
             }
             return true;
+        });
+    },
+
+    _getRoomName(aJID) {
+        if (aJID.node && aJID.domain) {
+            aJID = `${aJID.node}@${aJID.domain}`;
+        }
+        return new Promise((resolve, reject) => {
+            if (this._roomInfoCache.has(aJID)) {
+                resolve(this._roomInfoCache.get(aJID).name);
+                return;
+            }
+            let iq = Stanza.iq("get", null, aJID,
+                               Stanza.node("query", Stanza.NS.disco_info));
+            this.sendStanza(iq, (receivedStanza) => {
+                let query = receivedStanza.getElement(["query"]);
+                let name = query.getElement(["identity"]).attributes["name"];
+                let jid = this._parseJID(aJID);
+                let x = query.getElement(["x"]);
+                let roomInfo = {
+                    accountId: this.imAccount.id,
+                    name: query.getElement(["identity"]).attributes["name"],
+                    topic: x.getElement(["topic"]).innerText.trim(),
+                    participantCount: +x.getElement(["num_participants"]).innerText.trim(),
+                    jid: aJID,
+                    hipchat_id: x.getElement(["id"]).innerText.trim(),
+                    version: x.getElement(["version"]).innerText.trim(),
+                    chatRoomFieldValues: new ChatRoomFieldValues({
+                        room: jid.node,
+                        server: jid.domain,
+                    })
+                };
+                this._roomInfoCache[roomInfo.jid] = roomInfo;
+                resolve(roomInfo.name);
+            });
         });
     },
 
@@ -447,6 +483,8 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         return jid;
     },
 
+    _MUCConversationConstructor: HipChatConversation,
+    
     get wrappedJSObject() { return this },
     toString: function() { return `<HipChatAccount ${this.name}>`},
 });
