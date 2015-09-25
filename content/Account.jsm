@@ -8,11 +8,10 @@ Cu.import("resource:///modules/imServices.jsm");
 Cu.import("resource:///modules/imXPCOMUtils.jsm");
 Cu.import("resource:///modules/jsProtoHelper.jsm");
 Cu.import("resource:///modules/xmpp.jsm");
-Cu.import("resource:///modules/xmpp-session.jsm");
 Cu.import("resource:///modules/xmpp-xml.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
+Cu.import("chrome://hippie/content/Session.jsm");
 Cu.import("chrome://hippie/content/Conversation.jsm");
-Cu.importGlobalProperties(["URL"]);
 
 XPCOMUtils.defineLazyGetter(this, "_", () =>
   l10nHelper("chrome://chat/locale/xmpp.properties")
@@ -52,186 +51,36 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         password: {get label() { return _("chatRoomField.password"); }, isPassword: true}
     },
 
-    get _TOKEN_LABEL() { return "Mozilla Hippie Token"; },
-
     /**
      * Override XMPPAccountPrototype.connect() to determine the JID automatically
      */
     connect: function() {
         var [, login, server] = /(.*)@(.*?)$/.exec(this.name);
+
         if (server.endsWith(".hipchat.com")) {
-            // Hosted HipChat uses the same login server
-            server = "www.hipchat.com";
+            // For hosted HipChat, they use a central chat server
+            server = "chat.hipchat.com";
         }
-        this._api_server = server;
 
-        this.DEBUG(`Connecting to ${server} as ${login}`);
-        this.reportConnecting("Locating web login");
-
-        new Promise((resolve, reject) => { return resolve()})
-        // Fetch the sign in page
-        .then(() => {
-            const url = `https://${server}/sign_in`;
-            this.DEBUG(`Fetching login form ${url}`);
-            return Utils.fetch(url, {});
-        })
-        // Fill out the sign in form
-        .then((doc) => {
-            let url = new URL(doc.documentURI);
-            if (url.pathname == "/home") {
-                // already signed in
-                return doc;
-            }
-            let form = doc.querySelector("form[name='signin']");
-            let data = new FormData(form);
-            data.set("email", login);
-            data.set("password", this.imAccount.password);
-            this.DEBUG(`Submitting login form to ${form.action}`);
-            return Utils.fetch(form.action, {method: form.method, body: data});
-        })
-        // Confirm sign in, look for account info
-        .then((doc) => {
-            let url = new URL(doc.documentURI);
-            if (url.pathname == "/sign_in") {
-                let message = "Error signing in";
-                let box = doc.querySelector(".aui-message-error");
-                if (box) {
-                    message = box.textContent.trim();
-                }
-                throw message;
-            }
-            this._api_server = url.host;
-            url.pathname = "/account/api";
-            return Utils.fetch(url);
-        })
-        // Get the API token
-        .then((doc) => {
-            this.reportConnecting("Locating connection information");
-            this._lookupAPIToken(doc);
-        })
-        // Get current user xmpp id
-        .then(() => {
-            return Utils.fetch(`https://${this._api_server}/account/xmpp`);
-        })
-        .then((doc) => {
-            let content = doc.querySelector(".aui-page-panel-content table.aui");
-            this._user_info = {
-                jid: content.querySelector("#jabberid").textContent.trim(),
-                name: content.querySelector("#nickname").textContent.trim(),
-                host: content.querySelector("#connecthost").textContent.trim(),
-            };
-        })
-        .then(() => {
-            this._jid = this._parseJID(this._user_info.jid);
-
-            // For the resource, if the user has edited the option to a non
-            // empty value, use that.
-            if (this.prefs.prefHasUserValue("resource")) {
-                let resource = this.getString("resource");
-                if (resource) {
-                    this._jid.resource = resource;
-                }
-            }
-            // Otherwise, if the username doesn't contain a resource, use the
-            // value of the resource option (it will be the default value).
-            // If we set an empty resource, XMPPSession will fallback to
-            // XMPPDefaultResource (set to brandShortName).
-            if (!this._jid.resource) {
-                this._jid.resource = this.getString("resource");
-            }
-
-            //FIXME if we have changed this._jid.resource, then this._jid.jid
-            // needs to be updated. This value is however never used because
-            // while connected it's the jid of the session that's interesting.
-
-            this._connection =
-              new XMPPSession(this._user_info.host,
-                              5222,
-                              "require_tls",
-                              this._jid,
-                              this.imAccount.password,
-                              this);
-
-            // HipChat times out at 90s, ping at 60s.
-            this._connection.kTimeBeforePing = 60000;
-
-            return this._connection;
-        })
-        .catch((ex) => {
-            Cu.reportError(ex);
-            this.DEBUG(`Error connecting to HipChat: ${ex}`);
-        })
-    },
-
-    /**
-     * Look up the API token to use
-     * This is part of the connect() flow.
-     * @param doc {Document} The document from loading /account/api
-     * @return promise to be resolved
-     * @resolve nothing; but this._token will be the API token.
-     */
-    _lookupAPIToken: function(doc) {
-        return new Promise((resolve, reject) => {
-            let url = new URL(doc.documentURI);
-            if (url.pathname == "/account/confirm_password") {
-                // Need to confirm the password
-                let form = doc.querySelector("form[name='confirm_password']");
-                if (!form) {
-                    reject(`Failed to find password confirmation form`);
-                }
-                let data = new FormData(form);
-                data.set("password", this.imAccount.password);
-                this.DEBUG(`Submitting password confirmation to ${form.action}`);
-                Utils.fetch(form.action, {method: form.method, body: data})
-                    .then((doc) => resolve(this._lookupAPIToken(doc)))
-                    .catch(reject);
-                return;
-            }
-
-            // Check for existing OAuth scoped token
-            for (let label of doc.querySelectorAll("#tokens tr.data td.label")) {
-                if (label.textContent.trim() == this._TOKEN_LABEL) {
-                    let node = label.parentNode.querySelector(".token");
-                    this._token = node.textContent.trim();
-                    this.DEBUG(`Found existing token ${this._token}`);
-                    resolve();
-                    return;
-                }
-            }
-
-            // Request new token
-            this.DEBUG(`Will need to request new token`);
-            let form = doc.querySelector(".aui-page-panel-content > form[action$='/account/api']");
-            let data = new FormData(form);
-            data.set("label", this._TOKEN_LABEL);
-            data.delete("scopes[]");
-            for (let scope of ["send_message", "send_notification", "view_group", "view_messages", "view_room"]) {
-                data.append("scopes[]", scope);
-            }
-            // There's a <input name="action"> which breaks form.action
-            Utils.fetch(form.getAttribute("action"), {method: form.method, body: data})
-                .then((doc) => resolve(this._lookupAPIToken(doc)))
-                .catch(reject);
-        });
-    },
-
-    /**
-     * Make an API request
-     * @param path {String} The API endpoint, e.g. /v2/user/foo
-     * @param options {Object} See Utils.fetch
-     * @returns {Promise} The API JSON
-     */
-    _APIRequest: function(path, options={}) {
-        let headers = {};
-        headers["Authorization"] = `Bearer ${this._token}`;
-        let opts = {};
-        for (let k of Object.keys(options)) {
-            opts[k] = options[k];
+        let resource = null;
+        // For the resource, if the user has edited the option to a non
+        // empty value, use that.
+        if (this.prefs.prefHasUserValue("resource")) {
+            resource = this.getString("resource");
         }
-        opts.responseType = "json";
-        opts.headers = headers;
-        let url = new URL(path, `https://${this._api_server}/`);
-        return Utils.fetch(url, opts);
+        // Otherwise, if the username doesn't contain a resource, use the
+        // value of the resource option (it will be the default value).
+        // If we set an empty resource, XMPPSession will fallback to
+        // XMPPDefaultResource (set to brandShortName).
+        if (!resource) {
+            resource = this.getString("resource");
+        }
+
+        this._connection = new HipChatSession(server,
+                                              login,
+                                              this.imAccount.password,
+                                              this,
+                                              resource);
     },
 
     // Override default XMPP joinChat() to provide the nick automatically
