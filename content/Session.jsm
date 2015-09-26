@@ -93,6 +93,7 @@ HipChatSession.prototype = Utils.extend(XMPPSession.prototype, {
                 return;
             }
 
+            this._startAuthStanza = aStanza;
             let authMech = new HipChatAuth(this);
             this._password = null; // We don't need this anymore
             this._account.reportConnecting(_("connection.authenticating"));
@@ -102,11 +103,21 @@ HipChatSession.prototype = Utils.extend(XMPPSession.prototype, {
 
         authResult(aStanza) {
             this.DEBUG(`Got auth result; doing ${this._allowHipChatAuth ? "HipChat" : "fallback"} auth`);
+
+            let startAuthStanza = this._startAuthStanza;
+            delete this._startAuthStanza;
+
             if (!this._allowHipChatAuth || aStanza.localName != "success") {
                 return this._xmppStanzaListeners.authResult.call(this, aStanza);
             }
 
+            this._account.reportConnecting(_("connection.gettingResource"));
             this._jid = this._account._parseJID(aStanza.attributes["jid"]);
+            if (!this._jid) {
+                this._networkError(_("connection.error.failedToGetAResource"));
+                this._doFallbackAuth(startAuthStanza);
+                return;
+            }
             if (!this._jid.resource) {
                 this._jid.resource = this._resource;
             }
