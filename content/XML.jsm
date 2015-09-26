@@ -6,6 +6,7 @@ const EXPORTED_SYMBOLS = ["Stanza", "XMPPParser"];
 
 const { interfaces: Ci, results: Cr, utils: Cu, classes: Cc } = Components;
 var { XMLNode } = Cu.import("resource:///modules/xmpp-xml.jsm");
+Cu.import("chrome://hippie/content/Utils.jsm");
 
 /**
  * Get the first element anywhere inside the node (including child nodes) that
@@ -20,7 +21,7 @@ XMLNode.prototype.getElementNS = function(aQuery) {
 
     let nq = aQuery.slice(1);
     let q = aQuery[0];
-    let [ns, localName] = (q + "" == q) ? [null, q] : q;
+    let [ns, localName] = Array.isArray(q) ? q : [null, q];
     for (let child of this.children) {
         if (child.type == "text" || (ns && child.uri != ns) || child.localName != localName) {
             continue;
@@ -45,7 +46,7 @@ XMLNode.prototype.getElementsNS = function(aQuery) {
     }
 
     let q = aQuery[0];
-    let [ns, localName] = (q + "" == q) ? [null, q] : q;
+    let [ns, localName] = Array.isArray(q) ? q : [null, q];
     let c = this.children.filter((c) => (c.type != "text" && (!ns || c.uri == ns) && c.localName == localName));
     let nq = aQuery.slice(1);
     let res = [];
@@ -55,3 +56,9 @@ XMLNode.prototype.getElementsNS = function(aQuery) {
 
     return res;
 };
+
+Stanza.NS = Utils.extend(Stanza.NS, {
+    hipchat                 : "http://hipchat.com",
+    hipchat_startup         : "http://hipchat.com/protocol/startup",
+    hipchat_room            : "http://hipchat.com/protocol/muc#room",
+});

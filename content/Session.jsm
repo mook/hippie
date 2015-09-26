@@ -26,7 +26,7 @@ function HipChatAuth(aSession) {
 HipChatAuth.prototype = {
     next: function(aStanza) {
         let result = { done: true };
-        let node = Stanza.node("auth", "http://hipchat.com",
+        let node = Stanza.node("auth", Stanza.NS.hipchat,
                                {ver: "0",
                                 node: "http://hippie.mook.github.io",
                                 oauth2_token: true},
@@ -87,7 +87,7 @@ HipChatSession.prototype = Utils.extend(XMPPSession.prototype, {
                 return;
             }
 
-            if (!aStanza.getElementsNS([["http://hipchat.com", "auth"]])) {
+            if (!aStanza.getElementsNS([[Stanza.NS.hipchat, "auth"]])) {
                 this.LOG("HipChat-specific auth mechanism missing, falling back to plain XMPP");
                 this._doFallbackAuth(aStanza);
                 return;

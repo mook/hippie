@@ -12,6 +12,7 @@ Cu.import("resource:///modules/xmpp-xml.jsm");
 Cu.import("chrome://hippie/content/Utils.jsm");
 Cu.import("chrome://hippie/content/Session.jsm");
 Cu.import("chrome://hippie/content/Conversation.jsm");
+Cu.import("chrome://hippie/content/XML.jsm");
 
 XPCOMUtils.defineLazyGetter(this, "_", () =>
   l10nHelper("chrome://chat/locale/xmpp.properties")
@@ -81,6 +82,52 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
                                               this.imAccount.password,
                                               this,
                                               resource);
+    },
+
+    /**
+     * Called when the XMPP session is started; overridden to use the HipChat
+     * startup call
+     */
+    onConnection() {
+        // We still need to get the roster and do service discovery
+        XMPPAccountPrototype.onConnection.call(this);
+
+        this.reportConnecting(_("connection.downloadingRoster"));
+        let iq = Stanza.iq("get", null, null,
+                           Stanza.node("query", Stanza.NS.hipchat_startup));
+        this.sendStanza(iq, (stanza) => {
+            let query = stanza.getElementNS([[Stanza.NS.hipchat_startup, "query"]]);
+            if (!query) {
+                this.DEBUG(`Failed to do HipChat startup: ${query}`);
+                return;
+            }
+            const kInfoMap = {
+                name:       "name",
+                mention:    "mention_name",
+                user_id:    "user_id",
+                group_id:   "group_id",
+                group_host: "group_uri_domain",
+            }
+            this._user_info = this._user_info || {};
+            for (let key in kInfoMap) {
+                let elem = query.getElementNS([[Stanza.NS.hipchat_startup, kInfoMap[key]]]);
+                if (elem) {
+                    this._user_info[key] = elem.innerText;
+                } else {
+                    this.DEBUG(`Failed to find ${kInfoMap[key]}`);
+                }
+            }
+            for (let item of query.getElements(["preferences", "autoJoin", "item"])) {
+                this.DEBUG(`auto join: \n${item.convertToString("  ")}`);
+                let roomInfo = this._cacheRoomInfo(item);
+                if (roomInfo) {
+                    this.joinChat(roomInfo.chatRoomFieldValues);
+                } else {
+                    // One-on-one IM conversation
+                    this.createConversation(item.attributes["jid"]);
+                }
+            }
+        }, this);
     },
 
     // Override default XMPP joinChat() to provide the nick automatically
@@ -177,22 +224,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             let newItems = [];
             let query = receivedStanza.getElement(["query"]);
             for (let item of query.getElements(["item"])) {
-                let jid = this._parseJID(item.attributes["jid"]);
-                let roomInfo = {
-                    accountId: this.imAccount.id,
-                    name: item.attributes["name"],
-                    topic: item.getElement(["x", "topic"]).innerText.trim(),
-                    participantCount: +item.getElement(["x", "num_participants"]).innerText.trim(),
-                    jid: item.attributes["jid"],
-                    hipchat_id: item.getElement(["x", "id"]).innerText.trim(),
-                    version: item.getElement(["x", "version"]).innerText.trim(),
-                    chatRoomFieldValues: new ChatRoomFieldValues({
-                        room: jid.node,
-                        server: jid.domain,
-                    })
-                };
-                this._roomInfoCache[roomInfo.jid] = roomInfo;
-                newItems.push(roomInfo);
+                newItems.push(this._cacheRoomInfo(item));
             }
             let set = query.getElement(["set"]);
             if (set) {
@@ -212,6 +244,58 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
         });
     },
 
+    _cacheRoomInfo(aStanza) {
+        let query = aStanza.getElementNS([[Stanza.NS.disco_info, "query"]]) || aStanza;
+
+        let x = query.getElementNS([[Stanza.NS.hipchat_room, "x"]]);
+        if (!x) {
+            this.DEBUG(`Can't cache room info, not a room:\n${aStanza.convertToString("  ")}`);
+            return null;
+        }
+
+        let prop = (localName) => {
+            let elem = x.getElementNS([[Stanza.NS.hipchat_room, localName]]);
+            return elem ? elem.innerText.trim() : null;
+        };
+
+        let roomInfo = {
+            name: aStanza.attributes["name"],
+            accountId: this.imAccount.id,
+            topic: prop("topic"),
+            participantCount: parseInt(prop("num_participants"), 10),
+            hipchat_id: prop("id"),
+            version: prop("version"),
+        };
+
+        if (!roomInfo.name) {
+            let id = query.getElementNS([[Stanza.NS.disco_info, "identity"]]);
+            if (id) {
+                roomInfo.name = id.attributes["name"];
+            }
+        }
+        if (!roomInfo.name) {
+            this.DEBUG(`No name found in room info:\n${aStanza.convertToString("  ")}`);
+            return null;
+        }
+
+        let jid = aStanza.attributes["jid"];
+        if (!jid) {
+            jid = aStanza.attributes["from"];
+        }
+        if (!jid) {
+            this.DEBUG(`No JID found in room info:\n${aStanza.convertToString("  ")}`);
+            return null;
+        }
+        roomInfo.jid = this._parseJID(jid);
+        roomInfo.chatRoomFieldValues = new ChatRoomFieldValues({
+            room: roomInfo.jid.node,
+            server: roomInfo.jid.domain,
+        });
+
+        this._roomInfoCache.set(jid, roomInfo);
+        return roomInfo;
+    },
+
     _getRoomName(aJID) {
         if (aJID.node && aJID.domain) {
             aJID = `${aJID.node}@${aJID.domain}`;
@@ -224,25 +308,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             let iq = Stanza.iq("get", null, aJID,
                                Stanza.node("query", Stanza.NS.disco_info));
             this.sendStanza(iq, (receivedStanza) => {
-                let query = receivedStanza.getElement(["query"]);
-                let name = query.getElement(["identity"]).attributes["name"];
-                let jid = this._parseJID(aJID);
-                let x = query.getElement(["x"]);
-                let roomInfo = {
-                    accountId: this.imAccount.id,
-                    name: query.getElement(["identity"]).attributes["name"],
-                    topic: x.getElement(["topic"]).innerText.trim(),
-                    participantCount: +x.getElement(["num_participants"]).innerText.trim(),
-                    jid: aJID,
-                    hipchat_id: x.getElement(["id"]).innerText.trim(),
-                    version: x.getElement(["version"]).innerText.trim(),
-                    chatRoomFieldValues: new ChatRoomFieldValues({
-                        room: jid.node,
-                        server: jid.domain,
-                    })
-                };
-                this._roomInfoCache[roomInfo.jid] = roomInfo;
-                resolve(roomInfo.name);
+                resolve(this._cacheRoomInfo(receivedStanza)).name;
             });
         });
     },
