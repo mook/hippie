@@ -108,15 +108,23 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
                 group_id:   "group_id",
                 group_host: "group_uri_domain",
             }
-            this._user_info = this._user_info || {};
+            this._userInfo = this._userInfo || {};
             for (let key in kInfoMap) {
                 let elem = query.getElementNS([[Stanza.NS.hipchat_startup, kInfoMap[key]]]);
                 if (elem) {
-                    this._user_info[key] = elem.innerText;
+                    this._userInfo[key] = elem.innerText;
                 } else {
                     this.DEBUG(`Failed to find ${kInfoMap[key]}`);
                 }
             }
+
+            let regexpQuote = (str) => str.replace(/[[\]{}()*+?.\\^$|]/g, "\\$&");
+            this._pingRegexp = new RegExp("(?:^|\\W)(?:" +
+                                          regexpQuote(this._userInfo.name) +
+                                          "|@" +
+                                          regexpQuote(this._userInfo.mention) +
+                                          ")(?:\\W|$)", "i");
+
             for (let item of query.getElements(["preferences", "autoJoin", "item"])) {
                 this.DEBUG(`auto join: \n${item.convertToString("  ")}`);
                 let roomInfo = this._cacheRoomInfo(item);
@@ -129,6 +137,10 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
             }
         }, this);
     },
+
+    // _pingRegexp is overwritten once we have the name / mention
+    // The default value will never match
+    _pingRegexp: /$.^/,
 
     // Override default XMPP joinChat() to provide the nick automatically
     joinChat: function(aComponents) {
@@ -314,7 +326,7 @@ HipChatAccount.prototype = Utils.extend(XMPPAccountPrototype, {
     },
 
     joinChat: function(aComponents) {
-        aComponents.setValue("nick", this._user_info.name);
+        aComponents.setValue("nick", this._userInfo.name);
         return XMPPAccountPrototype.joinChat.call(this, aComponents);
     },
 

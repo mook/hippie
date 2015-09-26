@@ -25,3 +25,5 @@ Status:
   - Private rooms
     - [x] Fetch
     - [ ] Create
+  - [x] Getting mentioned
+  - [ ] Tab-complete other people's mentions
