@@ -225,6 +225,7 @@ HipChatSession.prototype = Utils.extend(XMPPSession.prototype, {
         })
         .catch((ex) => {
             this.ERROR(ex);
+            this._networkError(`Failed fallback authorization: ${ex}`);
         });
     },
 
